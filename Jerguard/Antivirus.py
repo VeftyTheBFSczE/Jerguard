@@ -1,23 +1,72 @@
-
 import virustotal_python
 import configparser
 import webbrowser
-import threading
 import requests
 import hashlib
-import os.path
+import os
 import time
 import sys
-import os
 from misc.values import Values
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtWidgets import QMessageBox
 from qt_material import apply_stylesheet
 import res.res_rc
+from PyQt5.QtCore import QThread, QObject, pyqtSignal
+
+
+# ScannerWorker nyní počítá celkový počet souborů, vysílá procentuální postup,
+# zprávy a také jména právě skenovaných souborů
+class ScannerWorker(QObject):
+    finished = pyqtSignal(list)           # seznam infikovaných souborů
+    progressPercent = pyqtSignal(int)       # aktuální procentuální postup (0-100)
+    progressMessage = pyqtSignal(str)       # textová zpráva (např. "Infected: ...")
+    scannedFile = pyqtSignal(str)           # signál s aktuálně skenovaným souborem
+
+    def __init__(self, directory):
+        super().__init__()
+        self.directory = directory
+
+    def run(self):
+        # Nejprve spočítáme celkový počet souborů
+        total_files = 0
+        for root, dirs, files in os.walk(self.directory):
+            total_files += len(files)
+        scanned_files = 0
+        infected_files = []
+        # Procházíme všechny soubory a vysíláme jejich cestu
+        for root, dirs, files in os.walk(self.directory):
+            for file in files:
+                file_path = os.path.join(root, file)
+                self.scannedFile.emit(file_path)
+                try:
+                    with open(file_path, "rb") as f:
+                        file_data = f.read()
+                    file_hash = hashlib.md5(file_data).hexdigest()
+                    found_virus = False
+                    # Kontrola proti lokálním databázím hashů
+                    for hash_pack in [Values.MD5_HASHES_pack1, Values.MD5_HASHES_pack2, Values.MD5_HASHES_pack3]:
+                        with open(hash_pack, "r") as f:
+                            for line in f:
+                                if line.startswith("#"):
+                                    continue
+                                if file_hash in line:
+                                    found_virus = True
+                                    break
+                        if found_virus:
+                            break
+                    if found_virus:
+                        infected_files.append((file_path, file_hash))
+                        self.progressMessage.emit(f"Infected: {file_path}")
+                except Exception:
+                    pass
+                scanned_files += 1
+                percent = int((scanned_files / total_files) * 100) if total_files > 0 else 0
+                self.progressPercent.emit(percent)
+        self.finished.emit(infected_files)
 
 
 class Side_Functions():
-    # change tab to defined tab
+    # Změna záložky
     def change_tab(self, tab, loading_msg):
         if tab == "home":
             self.Tabs.setCurrentIndex(0)
@@ -29,7 +78,7 @@ class Side_Functions():
             self.Tabs.setCurrentIndex(3)
             self.label_2.setText(loading_msg)
 
-    # show user a message box with defined message
+    # Zobrazení hlášení
     def log_screen(self, message, title, msg_type):
         msgBox = QMessageBox()
         msgBox.setText(message)
@@ -40,7 +89,7 @@ class Side_Functions():
             msgBox.setIcon(QMessageBox.Information)
         msgBox.exec_()
 
-    # log defined message to "current_dir/log/*_log.txt"
+    # Logování zpráv do souboru
     def log(self, message, log_type):
         if log_type == "error":
             log_path = Values.error_log_path
@@ -50,25 +99,25 @@ class Side_Functions():
             log_file.write(message + "\n")
         return
 
-    # get user file to scan
+    # Výběr souboru pro skenování
     def browse_file(self):
-        Side_Functions.change_tab(self, "loading", "The file is being scanned \n [NOTE] Scanning with the VirusTotal API may not work/take longer than usual")
+        Side_Functions.change_tab(self, "loading",
+            "The file is being scanned \n [NOTE] Scanning with the VirusTotal API may not work/take longer than usual")
         filepath_raw, filename_raw = os.path.split(str(QtWidgets.QFileDialog.getOpenFileName(MainWindow,
-                                                                        "Select File",
-                                                                        "")))
+                                                                                            "Select File",
+                                                                                            "")))
         filepath_raw = filepath_raw.replace("('", "")
         filename = filename_raw.replace("', 'All Files (*)')", "")
         filepath = (filepath_raw + "/" + filename)
         return str(filepath), str(filename)
 
-    # get the known Virus hashes from virusshare.com and check if they are already installed
+    # Stažení hashů z virusshare.com, pokud ještě nejsou staženy
     def get_hashes(MainWindow, self):
         try:
             Side_Functions.change_tab(self, "loading", "getting hashes from virusshare.com")
             if os.path.isfile(Values.MD5_HASHES_pack1):
                 Side_Functions.change_tab(self, "home", "")
                 return
-            # define urls
             pack_1_url = "https://virusshare.com/hashfiles/VirusShare_00000.md5"
             pack_2_url = "https://virusshare.com/hashfiles/VirusShare_00001.md5"
             pack_3_url = "https://virusshare.com/hashfiles/VirusShare_00002.md5"
@@ -81,34 +130,33 @@ class Side_Functions():
                 f.write(pack_2.text)
             with open(Values.MD5_HASHES_pack3, "w") as f:
                 f.write(pack_3.text)
-            f.close()
             Side_Functions.change_tab(self, "home", "")
         except Exception as e:
             Side_Functions.log_screen(self, "Error: " + str(e), "Error (get Hashes)", "error")
             Side_Functions.log(self, "Error: " + str(e), "error (get Hashes)")
             Side_Functions.change_tab(self, "home", "")
 
-    # set the file information to the virus results page
+    # Nastavení informací o souboru v okně výsledků
     def set_file_info(self, filename, filepath, readable_hash, virus_yes_no, VT_widget, MT_widget):
         self.FileName.setText("File Name: " + filename)
         self.FilePath.setText("File Path: " + filepath)
         self.FileHash.setText("File Hash: " + readable_hash)
-        if VT_widget == True:
+        if VT_widget:
             self.VirusTotalWidget.show()
         else:
             self.VirusTotalWidget.hide()
-        if MT_widget == True:
+        if MT_widget:
             self.MetaDefenderWidget.show()
         else:
             self.MetaDefenderWidget.hide()
-        if virus_yes_no == True:
-            self.IsFileVirusY_N.setStyleSheet("color: red")
+        if virus_yes_no:
+            self.IsFileVirusY_N.setStyleSheet("color: #ff3a3a;")
             self.IsFileVirusY_N.setText("Virus detected!")
-        elif virus_yes_no == False:
-            self.IsFileVirusY_N.setStyleSheet("color: green")
+        else:
+            self.IsFileVirusY_N.setStyleSheet("color: #7ed321;")
             self.IsFileVirusY_N.setText("No virus found")
 
-    # delete scanned file
+    # Smazání souboru
     def delete(self, file_path):
         try:
             x = file_path
@@ -128,7 +176,7 @@ class Side_Functions():
                 Side_Functions.log_screen(self, "Info: Looks like the file was already deleted", "Info (delete file)", "info")
                 Side_Functions.log(self, "Info: Looks like the file was already deleted", "Info (delete file)")
 
-    # add theme to ComboBox
+    # Přidání témat do ComboBoxu
     def setThemesComboBox(self):
         style = Settings.Read_Settings(MainWindow, self)[0]
         path, style = os.path.split(style)
@@ -141,7 +189,8 @@ class Side_Functions():
             else:
                 self.ThemesComboBox.addItem(file)
 
-# SIDE BAR TABS (původně implementace s bočním panelem)
+
+# Třída pro ovládání záložek (původně boční panel)
 class Tabs():
     def change_tab_home(self):
         try:
@@ -151,7 +200,7 @@ class Tabs():
             style_dl, color = style.split()
             self.HomeTabButton.setStyleSheet("image: url(:/res/SideBar/home.svg);")
             self.SettingsTabButton.setStyleSheet("image: url(:/res/SideBar/settings.svg);")
-            self.CurrentTabSettings.setStyleSheet("background-color: rgb(78, 86, 94);")
+            self.CurrentTabSettings.setStyleSheet("background-color: #2e2e2e;")
             self.CurrentTabHome.setStyleSheet(f"background-color: {color};")
         except:
             return
@@ -165,39 +214,41 @@ class Tabs():
             self.SettingsTabButton.setStyleSheet("image: url(:/res/SideBar/settings.svg);")
             self.HomeTabButton.setStyleSheet("image: url(:/res/SideBar/home.svg);")
             self.CurrentTabSettings.setStyleSheet(f"background-color: {color};")
-            self.CurrentTabHome.setStyleSheet("background-color: rgb(78, 86, 94);")
+            self.CurrentTabHome.setStyleSheet("background-color: #2e2e2e;")
         except:
             return
 
-# APPLY STYLE
+
+# Třída pro aplikaci témat
 class Style():
     def style_mode(self, MainWindow, theme):
         try:
-            apply_stylesheet(MainWindow, theme=Values.theme_path+theme, extra=Values.extra)
+            apply_stylesheet(MainWindow, theme=Values.theme_path + theme, extra=Values.extra)
             style = theme.replace(".xml", "").replace("_", " ")
             style_dl, color = style.split()
             if style_dl == "light":
-                self.SideBar.setStyleSheet("background-color: rgb(182, 182, 182);")
-                self.SideBar_2.setStyleSheet("background-color: rgb(182, 182, 182);")
+                self.SideBar.setStyleSheet("background-color: #b6b6b6;")
+                self.SideBar_2.setStyleSheet("background-color: #b6b6b6;")
                 self.CurrentTabHome.setStyleSheet(f"background-color: {color};")
                 self.CurrentTabSettings.setStyleSheet(f"background-color: {color};")
-                self.HomeTitle.setStyleSheet("background-color: rgb(182, 182, 182);")
-                self.SettingsTitle.setStyleSheet("background-color: rgb(182, 182, 182);")
-                self.VirusResultsTitle.setStyleSheet("background-color: rgb(182, 182, 182);")
-                self.LoadingPageTitle.setStyleSheet("background-color: rgb(182, 182, 182);")
+                self.HomeTitle.setStyleSheet("background-color: #b6b6b6;")
+                self.SettingsTitle.setStyleSheet("background-color: #b6b6b6;")
+                self.VirusResultsTitle.setStyleSheet("background-color: #b6b6b6;")
+                self.LoadingPageTitle.setStyleSheet("background-color: #b6b6b6;")
             else:
-                self.SideBar.setStyleSheet("background-color: rgb(81, 89, 97);")
-                self.SideBar_2.setStyleSheet("background-color: rgb(81, 89, 97);")
+                self.SideBar.setStyleSheet("background-color: #515961;")
+                self.SideBar_2.setStyleSheet("background-color: #515961;")
                 self.CurrentTabHome.setStyleSheet(f"background-color: {color};")
                 self.CurrentTabSettings.setStyleSheet(f"background-color: {color};")
-                self.HomeTitle.setStyleSheet("background-color: rgb(81, 89, 97);")
-                self.SettingsTitle.setStyleSheet("background-color: rgb(81, 89, 97);")
-                self.VirusResultsTitle.setStyleSheet("background-color: rgb(81, 89, 97);")
-                self.LoadingPageTitle.setStyleSheet("background-color: rgb(81, 89, 97);")
+                self.HomeTitle.setStyleSheet("background-color: #515961;")
+                self.SettingsTitle.setStyleSheet("background-color: #515961;")
+                self.VirusResultsTitle.setStyleSheet("background-color: #515961;")
+                self.LoadingPageTitle.setStyleSheet("background-color: #515961;")
         except:
             return
 
-# SETTINGS - Ukládání, načítání a aplikace uživatelských nastavení
+
+# Třída pro nastavení – ukládání, načítání a aplikaci uživatelských nastavení
 class Settings():
     def Save_Settings(MainWindow, self):
         Side_Functions.change_tab(self, "loading", "saving settings")
@@ -249,7 +300,8 @@ class Settings():
         self.MetaDefenderApiKey.setText(Settings.Read_Settings(MainWindow, self)[4])
         return
 
-# FILE SCAN
+
+# Třída pro skenování souborů
 class File_Scan():
     def SCAN(MainWindow, self):
         try:
@@ -262,7 +314,7 @@ class File_Scan():
             VT_widget = False
             MT_widget = False
 
-            ### CHECK IF FILE IS A VIRUS (lokálně)
+            # Kontrola, zda soubor odpovídá známému viru (lokálně)
             with open(Values.MD5_HASHES_pack1, "r") as f:
                 for line in f:
                     if line.startswith("#"):
@@ -271,7 +323,7 @@ class File_Scan():
                         found_virus = True
                         break
             f.close()
-            if found_virus == False:
+            if not found_virus:
                 with open(Values.MD5_HASHES_pack2, "r") as f:
                     for line in f:
                         if line.startswith("#"):
@@ -279,7 +331,7 @@ class File_Scan():
                         if file_hash in line:
                             found_virus = True
                             break
-            if found_virus == False:
+            if not found_virus:
                 with open(Values.MD5_HASHES_pack3, "r") as f:
                     for line in f:
                         if line.startswith("#"):
@@ -293,7 +345,7 @@ class File_Scan():
             Side_Functions.change_tab(self, "home", "")
             return
 
-        ### CHECK FILE WITH SELECTED API(s) ###
+        # Kontrola souboru pomocí vybraných API
         class API_CHECK():
             def VT_API(self, file_path, file_name):
                 self.DetectionsText.setText("-")
@@ -310,6 +362,7 @@ class File_Scan():
                     with virustotal_python.Virustotal(VT_API_KEY) as vtotal:
                         resp = vtotal.request("files", files=files, method="POST")
                         id = str(resp.data["id"])
+
                     def scan(VT_API_KEY, id):
                         url = f"https://www.virustotal.com/api/v3/analyses/{id}"
                         headers = {
@@ -320,16 +373,17 @@ class File_Scan():
                         analysis_json = analysis.json()
                         status = analysis_json["data"]["attributes"]["status"]
                         return analysis_json, status
+
                     while scan(VT_API_KEY, id)[1] == "queued":
                         time.sleep(2)
                     analysis_json = scan(VT_API_KEY, id)[0]
                     detections = analysis_json["data"]["attributes"]["stats"]["malicious"]
                     not_detections = analysis_json["data"]["attributes"]["stats"]["undetected"]
                     if detections > not_detections:
-                        self.DetectionsText.setStyleSheet("color: red")
+                        self.DetectionsText.setStyleSheet("color: #ff3a3a;")
                         self.DetectionsText.setText(f"{str(detections)} | {str(not_detections)}")
                     else:
-                        self.DetectionsText.setStyleSheet("color: green")
+                        self.DetectionsText.setStyleSheet("color: #7ed321;")
                         self.DetectionsText.setText(f"{str(detections)} | {str(not_detections)}")
                 except Exception as e:
                     Side_Functions.log_screen(self, "Error: " + str(e), "Error (VT API)", "error")
@@ -350,10 +404,10 @@ class File_Scan():
                     not_detections = analysis_json["scan_results"]["total_avs"]
                     half_not_detections = not_detections / 2
                     if detections > half_not_detections:
-                        self.MetaDefenderDetectionsText.setStyleSheet("color: red")
+                        self.MetaDefenderDetectionsText.setStyleSheet("color: #ff3a3a;")
                         self.MetaDefenderDetectionsText.setText(f"{str(detections)} | {str(not_detections)}")
                     else:
-                        self.MetaDefenderDetectionsText.setStyleSheet("color: green")
+                        self.MetaDefenderDetectionsText.setStyleSheet("color: #7ed321;")
                         self.MetaDefenderDetectionsText.setText(f"{str(detections)} | {str(not_detections)}")
                 except Exception as e:
                     if analysis_json["error"]["code"] == 404003:
@@ -361,8 +415,10 @@ class File_Scan():
                         self.MetaDefenderDetectionsText.setText("Hash not found.")
                         self.label_6.setText("")
                     else:
-                        Side_Functions.log_screen(self, "Error: " + str(e) + " / API RESPONSE: " + str(analysis_json), "Error (MT API)", "error")
-                        Side_Functions.log(self, "Error (MT API): " + str(e) + " / API RESPONSE: " + str(analysis_json), "error")
+                        Side_Functions.log_screen(self, "Error: " + str(e) + " / API RESPONSE: " + str(analysis_json),
+                                                  "Error (MT API)", "error")
+                        Side_Functions.log(self, "Error (MT API): " + str(e) + " / API RESPONSE: " + str(analysis_json),
+                                           "error")
 
         if self.UseVirusTotalApiCheckBox.isChecked():
             try:
@@ -379,11 +435,11 @@ class File_Scan():
 
         self.DeleteFileButton.clicked.connect(lambda: Side_Functions.delete(self, file_path))
         if self.DetectionsText.text() == "-":
-            self.DetectionsText.setStyleSheet("color: red")
+            self.DetectionsText.setStyleSheet("color: #ff3a3a;")
             self.DetectionsText.setText("ERROR")
             self.label_5.setText("")
         if self.MetaDefenderDetectionsText.text() == "-":
-            self.MetaDefenderDetectionsText.setStyleSheet("color: red")
+            self.MetaDefenderDetectionsText.setStyleSheet("color: #ff3a3a;")
             self.MetaDefenderDetectionsText.setText("ERROR")
             self.label_6.setText("")
         Side_Functions.change_tab(self, "scan_results", "")
@@ -393,7 +449,8 @@ class File_Scan():
             Side_Functions.change_tab(self, "home", "")
             pass
 
-# UI - Modernizované rozhraní pomocí layoutů a horní navigační lišty
+
+# UI – moderní rozhraní s horní navigační lištou a záložkami
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
@@ -409,7 +466,7 @@ class Ui_MainWindow(object):
         self.central_widget.setObjectName("central_widget")
         MainWindow.setCentralWidget(self.central_widget)
 
-        ## Horní Navigační Lišta
+        ## Horní navigační lišta
         self.nav_bar = QtWidgets.QHBoxLayout()
         self.nav_bar.setContentsMargins(10, 10, 10, 10)
         self.nav_bar.setSpacing(20)
@@ -431,7 +488,7 @@ class Ui_MainWindow(object):
         self.nav_bar.addWidget(self.version_display)
         self.central_layout.addLayout(self.nav_bar)
 
-        ## Stacked Widget pro různé stránky
+        ## Stacked widget pro jednotlivé stránky
         self.Tabs = QtWidgets.QStackedWidget()
         self.Tabs.setObjectName("Tabs")
 
@@ -452,6 +509,11 @@ class Ui_MainWindow(object):
         self.ReportIssueButton.setIcon(QtGui.QIcon(":/res/Buttons/report.svg"))
         self.ReportIssueButton.setIconSize(QtCore.QSize(24, 24))
         button_layout.addWidget(self.ReportIssueButton)
+        # Přidání tlačítka pro skenování celého systému
+        self.ScanSystemButton = QtWidgets.QPushButton("Scan Entire System")
+        self.ScanSystemButton.setIcon(QtGui.QIcon(":/res/Buttons/scan_system.svg"))
+        self.ScanSystemButton.setIconSize(QtCore.QSize(24, 24))
+        button_layout.addWidget(self.ScanSystemButton)
         button_layout.addStretch()
         home_layout.addLayout(button_layout)
         self.Tabs.addWidget(self.HomeTab)
@@ -511,7 +573,7 @@ class Ui_MainWindow(object):
         self.label = QtWidgets.QLabel("Conclusion:")
         self.virus_indicator_layout.addWidget(self.label)
         self.IsFileVirusY_N = QtWidgets.QLabel("YES")
-        self.IsFileVirusY_N.setStyleSheet("color: red; font-weight: bold;")
+        self.IsFileVirusY_N.setStyleSheet("color: #ff3a3a; font-weight: bold;")
         self.virus_indicator_layout.addWidget(self.IsFileVirusY_N)
         self.virus_indicator_layout.addStretch()
         scan_layout.addLayout(self.virus_indicator_layout)
@@ -562,6 +624,18 @@ class Ui_MainWindow(object):
         self.label_2 = QtWidgets.QLabel("Please wait while your file is being scanned.")
         self.label_2.setAlignment(QtCore.Qt.AlignCenter)
         loading_layout.addWidget(self.label_2)
+        # Deterministický progress bar a progress label
+        self.progressBar = QtWidgets.QProgressBar(self.LoadingPage)
+        self.progressBar.setRange(0, 100)
+        self.progressBar.setValue(0)
+        loading_layout.addWidget(self.progressBar)
+        self.progressLabel = QtWidgets.QLabel("")
+        self.progressLabel.setAlignment(QtCore.Qt.AlignCenter)
+        loading_layout.addWidget(self.progressLabel)
+        # Textové pole pro výpis skenovaných souborů
+        self.scannedFilesTextEdit = QtWidgets.QPlainTextEdit(self.LoadingPage)
+        self.scannedFilesTextEdit.setReadOnly(True)
+        loading_layout.addWidget(self.scannedFilesTextEdit)
         self.Tabs.addWidget(self.LoadingPage)
 
         self.central_layout.addWidget(self.Tabs)
@@ -572,8 +646,7 @@ class Ui_MainWindow(object):
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
         ### SET LOG TEMPLATE ###
-        log_template = f"""\
-PY-Antivirus [v{Values.app_version}] 
+        log_template = f"""Jerguard [v{Values.app_version}] 
 ##############################LOGS##############################\n"""
         Side_Functions.log(self, log_template, "error")
         Side_Functions.log(self, log_template, "app")
@@ -585,9 +658,56 @@ PY-Antivirus [v{Values.app_version}]
         self.HomeTabButton.clicked.connect(lambda: Tabs.change_tab_home(self))
         self.SettingsTabButton.clicked.connect(lambda: Tabs.change_tab_settings(self))
         self.SaveSettingsButton.clicked.connect(lambda: Settings.Save_Settings(MainWindow, self))
+        # Připojení tlačítka pro skenování celého systému pomocí QThread
+        self.ScanSystemButton.clicked.connect(lambda: self.start_system_scan(MainWindow))
         Side_Functions.setThemesComboBox(self)
+        QThread.currentThread()  # zajistí, že hlavní vlákno běží správně
+        # Spuštění stahování hashů v samostatném vlákně
+        import threading
         threading.Thread(target=Side_Functions.get_hashes, args=(MainWindow, self)).start()
         Settings.Apply_Settings(MainWindow, self)
+
+    def start_system_scan(self, MainWindow):
+        directory = QtWidgets.QFileDialog.getExistingDirectory(MainWindow, "Select Directory to Scan", "")
+        if not directory:
+            return
+        Side_Functions.change_tab(self, "loading", "Scanning entire system. Please wait...")
+        self.progressBar.setValue(0)
+        self.progressLabel.setText("Starting scan...")
+        self.scannedFilesTextEdit.clear()
+
+        self.scanThread = QThread()
+        self.scannerWorker = ScannerWorker(directory)
+        self.scannerWorker.moveToThread(self.scanThread)
+        self.scanThread.started.connect(self.scannerWorker.run)
+        self.scannerWorker.finished.connect(self.on_scan_finished)
+        self.scannerWorker.finished.connect(self.scanThread.quit)
+        self.scannerWorker.finished.connect(self.scannerWorker.deleteLater)
+        self.scanThread.finished.connect(self.scanThread.deleteLater)
+        # Připojení signálů pro aktualizaci progress baru, zpráv a seznamu souborů
+        self.scannerWorker.progressPercent.connect(self.update_progress_percent)
+        self.scannerWorker.progressMessage.connect(self.update_progress_message)
+        self.scannerWorker.scannedFile.connect(self.update_scanned_file)
+        self.scanThread.start()
+
+    def update_progress_percent(self, percent):
+        self.progressBar.setValue(percent)
+
+    def update_progress_message(self, msg):
+        self.progressLabel.setText(msg)
+
+    def update_scanned_file(self, file_path):
+        # Přidá cestu k souboru do textového pole
+        self.scannedFilesTextEdit.appendPlainText(file_path)
+
+    def on_scan_finished(self, infected_files):
+        result_message = f"Scanning complete.\nFound {len(infected_files)} infected files."
+        if infected_files:
+            result_message += "\nInfected Files:\n" + "\n".join([file[0] for file in infected_files])
+        Side_Functions.log_screen(self, result_message, "Scan Results", "info")
+        self.progressBar.setValue(0)
+        self.progressLabel.setText("")
+        Side_Functions.change_tab(self, "home", "")
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
@@ -614,6 +734,7 @@ PY-Antivirus [v{Values.app_version}]
         self.label_2.setText(_translate("MainWindow", "Please wait while your file is being scanned."))
         self.version_display.setText(_translate("MainWindow", f"v{Values.app_version}"))
 
+
 ### CONSTRUCT THE UI ###
 if __name__ == "__main__":
     if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
@@ -621,7 +742,48 @@ if __name__ == "__main__":
     if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
         QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
     app = QtWidgets.QApplication(sys.argv)
-    MainWindow = QtWidgets.QMainWindow()  # Používáme QMainWindow, protože jsme nastavili centrální widget
+    
+    # Aplikujeme základní tmavý styl s červenými akcenty (vlastní QSS)
+    custom_stylesheet = """
+    QMainWindow {
+        background-color: #1e1e1e;
+    }
+    QLabel {
+        color: #ffffff;
+        font-family: Arial, sans-serif;
+    }
+    QPushButton {
+        background-color: #2e2e2e;
+        border: 1px solid #ff3a3a;
+        border-radius: 5px;
+        color: #ffffff;
+        padding: 5px 10px;
+    }
+    QPushButton:hover {
+        background-color: #ff3a3a;
+    }
+    QLineEdit, QComboBox, QPlainTextEdit {
+        background-color: #2e2e2e;
+        border: 1px solid #ff3a3a;
+        border-radius: 5px;
+        color: #ffffff;
+        padding: 3px;
+    }
+    QProgressBar {
+        background-color: #2e2e2e;
+        border: 1px solid #ff3a3a;
+        border-radius: 5px;
+        text-align: center;
+        color: #ffffff;
+    }
+    QProgressBar::chunk {
+        background-color: #ff3a3a;
+        border-radius: 5px;
+    }
+    """
+    app.setStyleSheet(custom_stylesheet)
+    
+    MainWindow = QtWidgets.QMainWindow()
     ui = Ui_MainWindow()
     ui.setupUi(MainWindow)
     MainWindow.show()
