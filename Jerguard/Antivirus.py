@@ -17,10 +17,10 @@ from PyQt5.QtCore import QThread, QObject, pyqtSignal
 # ScannerWorker nyní počítá celkový počet souborů, vysílá procentuální postup,
 # zprávy a také jména právě skenovaných souborů
 class ScannerWorker(QObject):
-    finished = pyqtSignal(list)           # seznam infikovaných souborů
-    progressPercent = pyqtSignal(int)       # aktuální procentuální postup (0-100)
-    progressMessage = pyqtSignal(str)       # textová zpráva (např. "Infected: ...")
-    scannedFile = pyqtSignal(str)           # signál s aktuálně skenovaným souborem
+    finished = pyqtSignal(list)  # seznam infikovaných souborů
+    progressPercent = pyqtSignal(int)  # aktuální procentuální postup (0-100)
+    progressMessage = pyqtSignal(str)  # textová zpráva (např. "Infected: ...")
+    scannedFile = pyqtSignal(str)  # signál s aktuálně skenovaným souborem
 
     def __init__(self, directory):
         super().__init__()
@@ -102,10 +102,10 @@ class Side_Functions():
     # Výběr souboru pro skenování
     def browse_file(self):
         Side_Functions.change_tab(self, "loading",
-            "The file is being scanned \n [NOTE] Scanning with the VirusTotal API may not work/take longer than usual")
+                                  "The file is being scanned \n [NOTE] Scanning with the VirusTotal API may not work/take longer than usual")
         filepath_raw, filename_raw = os.path.split(str(QtWidgets.QFileDialog.getOpenFileName(MainWindow,
-                                                                                            "Select File",
-                                                                                            "")))
+                                                                                             "Select File",
+                                                                                             "")))
         filepath_raw = filepath_raw.replace("('", "")
         filename = filename_raw.replace("', 'All Files (*)')", "")
         filepath = (filepath_raw + "/" + filename)
@@ -173,7 +173,8 @@ class Side_Functions():
                 Side_Functions.log_screen(self, "Error: " + str(e), "Error (delete file)", "error")
                 Side_Functions.log(self, "Error: " + str(e), "error (delete file)")
             else:
-                Side_Functions.log_screen(self, "Info: Looks like the file was already deleted", "Info (delete file)", "info")
+                Side_Functions.log_screen(self, "Info: Looks like the file was already deleted", "Info (delete file)",
+                                          "info")
                 Side_Functions.log(self, "Info: Looks like the file was already deleted", "Info (delete file)")
 
     # Přidání témat do ComboBoxu
@@ -742,7 +743,7 @@ if __name__ == "__main__":
     if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
         QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
     app = QtWidgets.QApplication(sys.argv)
-    
+
     # Aplikujeme základní tmavý styl s červenými akcenty (vlastní QSS)
     custom_stylesheet = """
     QMainWindow {
@@ -782,7 +783,7 @@ if __name__ == "__main__":
     }
     """
     app.setStyleSheet(custom_stylesheet)
-    
+
     MainWindow = QtWidgets.QMainWindow()
     ui = Ui_MainWindow()
     ui.setupUi(MainWindow)
